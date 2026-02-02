@@ -1,0 +1,217 @@
+const Maintenance = require("../models/Maintenance");
+
+exports.scheduleMaintenance = async (req, res, next) => {
+  try {
+    const { carId, type, description, scheduledDate, priority } = req.body;
+
+    const maintenance = new Maintenance({
+      carId,
+      type,
+      description,
+      scheduledDate,
+      priority,
+      status: "scheduled",
+    });
+
+    await maintenance.save();
+
+    res.status(201).json({
+      message: "Maintenance scheduled successfully",
+      maintenance,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getMaintenanceById = async (req, res, next) => {
+  try {
+    const maintenance = await Maintenance.findById(req.params.id).populate(
+      "carId",
+      "make model licensePlate",
+    );
+
+    if (!maintenance) {
+      return res.status(404).json({ error: "Maintenance record not found" });
+    }
+
+    res.json(maintenance);
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getAllMaintenance = async (req, res, next) => {
+  try {
+    const { carId, status, page = 1, limit = 10 } = req.query;
+    const filter = {};
+
+    if (carId) filter.carId = carId;
+    if (status) filter.status = status;
+
+    const skip = (page - 1) * limit;
+    const maintenance = await Maintenance.find(filter)
+      .populate("carId", "make model licensePlate")
+      .limit(Number(limit))
+      .skip(skip);
+
+    const total = await Maintenance.countDocuments(filter);
+
+    res.json({
+      maintenance,
+      pagination: {
+        total,
+        page: Number(page),
+        limit: Number(limit),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.updateMaintenanceStatus = async (req, res, next) => {
+  try {
+    const {
+      status,
+      startDate,
+      completedDate,
+      actualCost,
+      notes,
+      partsReplaced,
+    } = req.body;
+
+    const maintenance = await Maintenance.findByIdAndUpdate(
+      req.params.id,
+      {
+        status,
+        startDate,
+        completedDate,
+        actualCost,
+        notes,
+        partsReplaced,
+      },
+      { new: true },
+    );
+
+    if (!maintenance) {
+      return res.status(404).json({ error: "Maintenance record not found" });
+    }
+
+    res.json({
+      message: "Maintenance status updated successfully",
+      maintenance,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getMaintenanceSchedule = async (req, res, next) => {
+  try {
+    const { startDate, endDate } = req.query;
+
+    const schedule = await Maintenance.aggregate([
+      {
+        $match: {
+          status: { $in: ["scheduled", "in_progress"] },
+          scheduledDate: {
+            $gte: new Date(startDate),
+            $lte: new Date(endDate),
+          },
+        },
+      },
+      {
+        $lookup: {
+          from: "cars",
+          localField: "carId",
+          foreignField: "_id",
+          as: "carDetails",
+        },
+      },
+      { $unwind: "$carDetails" },
+      {
+        $project: {
+          _id: 1,
+          type: 1,
+          description: 1,
+          scheduledDate: 1,
+          priority: 1,
+          status: 1,
+          "carDetails.make": 1,
+          "carDetails.model": 1,
+          "carDetails.licensePlate": 1,
+        },
+      },
+      { $sort: { scheduledDate: 1 } },
+    ]);
+
+    res.json(schedule);
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getMaintenanceCosts = async (req, res, next) => {
+  try {
+    const { startDate, endDate, carId } = req.query;
+
+    const matchStage = {
+      status: "completed",
+      completedDate: {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate),
+      },
+    };
+
+    if (carId) matchStage.carId = require("mongoose").Types.ObjectId(carId);
+
+    const costs = await Maintenance.aggregate([
+      { $match: matchStage },
+      {
+        $facet: {
+          totalCost: [
+            {
+              $group: {
+                _id: null,
+                total: { $sum: "$actualCost" },
+                count: { $sum: 1 },
+              },
+            },
+          ],
+          costByType: [
+            {
+              $group: {
+                _id: "$type",
+                cost: { $sum: "$actualCost" },
+                count: { $sum: 1 },
+              },
+            },
+          ],
+          costByCar: [
+            {
+              $lookup: {
+                from: "cars",
+                localField: "carId",
+                foreignField: "_id",
+                as: "car",
+              },
+            },
+            { $unwind: "$car" },
+            {
+              $group: {
+                _id: "$car.licensePlate",
+                cost: { $sum: "$actualCost" },
+                count: { $sum: 1 },
+              },
+            },
+          ],
+        },
+      },
+    ]);
+
+    res.json(costs[0]);
+  } catch (error) {
+    next(error);
+  }
+};

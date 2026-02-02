@@ -1,0 +1,184 @@
+const Car = require("../models/Car");
+
+exports.createCar = async (req, res, next) => {
+  try {
+    const carData = req.body;
+    const car = new Car(carData);
+    await car.save();
+
+    res.status(201).json({
+      message: "Car added successfully",
+      car,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getAllCars = async (req, res, next) => {
+  try {
+    const {
+      status,
+      category,
+      minPrice,
+      maxPrice,
+      page = 1,
+      limit = 10,
+    } = req.query;
+    const filter = {};
+
+    if (status) filter.status = status;
+    if (category) filter.category = category;
+    if (minPrice || maxPrice) {
+      filter.dailyRate = {};
+      if (minPrice) filter.dailyRate.$gte = Number(minPrice);
+      if (maxPrice) filter.dailyRate.$lte = Number(maxPrice);
+    }
+
+    const skip = (page - 1) * limit;
+    const cars = await Car.find(filter).limit(Number(limit)).skip(skip);
+
+    const total = await Car.countDocuments(filter);
+
+    res.json({
+      cars,
+      pagination: {
+        total,
+        page: Number(page),
+        limit: Number(limit),
+        pages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getCarById = async (req, res, next) => {
+  try {
+    const car = await Car.findById(req.params.id);
+    if (!car) {
+      return res.status(404).json({ error: "Car not found" });
+    }
+    res.json(car);
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.updateCar = async (req, res, next) => {
+  try {
+    const allowedFields = [
+      "make",
+      "model",
+      "dailyRate",
+      "seats",
+      "transmission",
+      "fuelType",
+      "mileage",
+      "status",
+      "location",
+      "features",
+      "images",
+      "insuranceType",
+      "documents",
+    ];
+
+    const updates = {};
+    Object.keys(req.body).forEach((key) => {
+      if (allowedFields.includes(key)) {
+        updates[key] = req.body[key];
+      }
+    });
+
+    const car = await Car.findByIdAndUpdate(req.params.id, updates, {
+      new: true,
+      runValidators: true,
+    });
+
+    if (!car) {
+      return res.status(404).json({ error: "Car not found" });
+    }
+
+    res.json({
+      message: "Car updated successfully",
+      car,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.deleteCar = async (req, res, next) => {
+  try {
+    const car = await Car.findByIdAndDelete(req.params.id);
+    if (!car) {
+      return res.status(404).json({ error: "Car not found" });
+    }
+    res.json({ message: "Car deleted successfully" });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getAvailableCars = async (req, res, next) => {
+  try {
+    const { startDate, endDate, category, branch } = req.query;
+
+    const matchStage = {
+      status: "available",
+    };
+
+    if (category) matchStage.category = category;
+    if (branch) matchStage["location.branch"] = branch;
+
+    const cars = await Car.aggregate([
+      { $match: matchStage },
+      {
+        $lookup: {
+          from: "rentals",
+          let: { carId: "$_id" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ["$carId", "$$carId"] },
+                    { $in: ["$status", ["booked", "ongoing"]] },
+                    {
+                      $or: [
+                        {
+                          $and: [
+                            { $gte: ["$startDate", new Date(startDate)] },
+                            { $lte: ["$startDate", new Date(endDate)] },
+                          ],
+                        },
+                        {
+                          $and: [
+                            { $gte: ["$endDate", new Date(startDate)] },
+                            { $lte: ["$endDate", new Date(endDate)] },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              },
+            },
+          ],
+          as: "conflicts",
+        },
+      },
+      {
+        $match: {
+          conflicts: { $eq: [] },
+        },
+      },
+      { $project: { conflicts: 0 } },
+    ]);
+
+    res.json(cars);
+  } catch (error) {
+    next(error);
+  }
+};
